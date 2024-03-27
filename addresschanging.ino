@@ -1,16 +1,24 @@
-#include <PZEM004Tv30.h> //pzem library
-
-
+#include <PZEM004Tv30.h>
 #define REPORTING_PERIOD_MS 1000
 #define HardwareSerial
 #define ESP32
 #define PZEM_DEFAULT_ADDR 0xF8
-//pzem sensor pins
-#if !defined(SET_ADDRESS)
 #define SET_ADDRESS 0xF7
-#endif
-#define READ_TIMEOUT 100
+#define READ_TIMEOUT 1000
 #define INCREMENT false
+#define NEW_ADDRESS 0xF7
+
+#define REG_VOLTAGE     0x0000
+#define REG_CURRENT_L   0x0001
+#define REG_CURRENT_H   0X0002
+#define REG_POWER_L     0x0003
+#define REG_POWER_H     0x0004
+#define REG_ENERGY_L    0x0005
+#define REG_ENERGY_H    0x0006
+#define REG_FREQUENCY   0x0007
+#define REG_PF          0x0008
+#define REG_ALARM       0x0009
+
 
 #define READ_TIMEOUT 100
 #define CMD_RHR         0x03
@@ -18,31 +26,159 @@
 #define CMD_WSR         0x06
 #define CMD_CAL         0x41
 #define CMD_REST        0x42
-#define WREG_ADDR  0xF8
+#define WREG_ADDR  0xF7
 #define INVALID_ADDRESS 0x00
+#define RESPONSE_SUCCESS 0xF8 // Example constant for success response
 
 
-PZEM004Tv30 pzem1(Serial, 3, 1, 0xF8); // UART0 (Serial0) on pins 3 (RX) and 1 (TX)
+PZEM004Tv30 pzem1(Serial, 3,1,0xF8); // UART0 (Serial0) on pins 3 (RX) and 1 (TX)
 
 //byte customAddressCommand[] = {0xF8, 0x04, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00};
 Stream* _serial = &Serial;
 bool _isConnected = false;  
 uint8_t _addr = PZEM_DEFAULT_ADDR;
-//functions
-//---------------------readAddress---------------------------------
+
+//function prototypes
+uint8_t readtheAddress(bool update);
+bool sendCommand8(uint8_t cmd, uint16_t rAddr, uint16_t val, bool check, uint16_t slave_addr);
+void settheCRC(uint8_t *buf, uint16_t len);
+uint16_t CRC_16(const uint8_t *data, uint16_t len);
+uint16_t receive(uint8_t *resp, uint16_t len);
+bool checktheCRC(const uint8_t *buf, uint16_t len);
+float getvoltage();
+bool updatetheValues();
+
+struct CurrentValues {
+    float getvoltage;
+} _currentValues;
+
+unsigned long _lastRead = 0;
+const unsigned long UPDATE_TIME = 1000; // Define your desired update time
+
+void setup() {
+  Serial.begin(9600);
+  _serial = &Serial;
+  Serial.print("Starting...");
+}
+
+void loop() {
+  static uint8_t addr = SET_ADDRESS;
+    Serial.print("Previous address:   0x");
+    Serial.println(pzem1.getAddress(), HEX);
+    Serial.println(readtheAddress(true), HEX);
+
+    // Set the custom address
+    Serial.print("Setting address to: 0x");
+    Serial.println(addr, HEX);
+    if(!settheAddress(0xF7))
+    {
+      // Setting custom address failed. Probably no PZEM connected
+      Serial.println("Error setting address.");
+    } else {
+      // Print out the new custom address
+      Serial.print("Current address:    0x");
+      Serial.println(readtheAddress(true), HEX);
+      Serial.println();
+    }
+
+    // Update address based on specific conditions
+    addr = (addr == SET_ADDRESS) ? NEW_ADDRESS : SET_ADDRESS;  
+    delay(1000);
+    Serial.print("Voltage: "); 
+    Serial.print(getvoltage());
+    Serial.println("V");
+    Serial.println("=======================================");
+    delay(3000);
+  
+}
+
+float getvoltage()
+{
+    if(!updatetheValues()) // Update vales if necessary
+        return NAN; // Update did not work, return NAN
+
+    return _currentValues.getvoltage;
+}
+
+
+//----------------------UpdateValues)-----------------------
+bool updatetheValues()
+{
+    //static uint8_t buffer[] = {0x00, CMD_RIR, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00};
+    static uint8_t response[25];
+
+    // If we read before the update time limit, do not update
+    if(_lastRead + UPDATE_TIME > millis()){
+        return true;
+    }
+
+    DEBUGLN("Updating Values");
+
+
+    // Read 10 registers starting at 0x00 (no check)
+    sendCommand8(CMD_RIR, 0x00, 0x0A, false, 0xF8);
+
+
+    if(receive(response, 25) != 25){ // Something went wrong
+        return false;
+    }
+
+
+
+    // Update the current values
+    _currentValues.getvoltage = ((uint32_t)response[3] << 8 | // Raw voltage in 0.1V
+                              (uint32_t)response[4])/10.0;
+
+    //_currentValues.getcurrent = ((uint32_t)response[5] << 8 | // Raw current in 0.001A
+                              //(uint32_t)response[6] |
+                              //(uint32_t)response[7] << 24 |
+                              //(uint32_t)response[8] << 16) / 1000.0;
+
+    //_currentValues.getpower =   ((uint32_t)response[9] << 8 | // Raw power in 0.1W
+                              //(uint32_t)response[10] |
+                              //(uint32_t)response[11] << 24 |
+                              //(uint32_t)response[12] << 16) / 10.0;
+
+    //_currentValues.getenergy =  ((uint32_t)response[13] << 8 | // Raw Energy in 1Wh
+                              //(uint32_t)response[14] |
+                              //(uint32_t)response[15] << 24 |
+                              //(uint32_t)response[16] << 16) / 1000.0;
+
+    //_currentValues.getfrequency=((uint32_t)response[17] << 8 | // Raw Frequency in 0.1Hz
+                              //(uint32_t)response[18]) / 10.0;
+
+    //_currentValues.getpf =      ((uint32_t)response[19] << 8 | // Raw pf in 0.01
+                              //(uint32_t)response[20])/100.0;
+
+    //_currentValues.getalarms =  ((uint32_t)response[21] << 8 | // Raw alarm value
+                              //(uint32_t)response[22]);
+
+    // Record current time as _lastRead
+    _lastRead = millis();
+
+    return true;
+}
+
+
+
+//---------------------readtheAddress---------------------------------
 uint8_t readtheAddress(bool update)
 {
     static uint8_t response[7];
     uint8_t addr = 0;
     // Read 1 register
-    if (!sendCmd8(CMD_RHR, WREG_ADDR, 0x01, false,0xF8))
+    if (!sendCommand8(CMD_RHR, WREG_ADDR, 0x01, update,0xF8))
+        Serial.println("Invalid Address (ReadAddress)");
         return INVALID_ADDRESS;
+        
 
 
-    if(receive(response, 7) != 7){ // Something went wrong
+    if(receive(response, 6) != 6){ // Something went wrong
+        Serial.print("Something went wrong in the (ReadAddress)");
         return INVALID_ADDRESS;
+        
     }
-
+    printReceivedBytes(response, 6);
     // Get the current address
     addr = ((uint32_t)response[3] << 8 | // Raw address
                               (uint32_t)response[4]);
@@ -54,15 +190,43 @@ uint8_t readtheAddress(bool update)
     return addr;
 }
 
+//-----------------settheAddress-------------------------------------
 
-//------------------------sendcmd8---------------------------------
-bool sendCmd8(uint8_t cmd, uint16_t rAddr, uint16_t val, bool check, uint16_t slave_addr){
+bool settheAddress(uint8_t addr)
+{
+    if(addr < 0x01 || addr > 0xF7) // sanity check
+        return false;
+
+    // Write the new address to the address register
+    if(!sendCommand8(CMD_WSR, WREG_ADDR, addr, true,0xF7))
+        return false;
+
+    _addr = addr; // If successful, update the current slave address
+
+    return true;
+}
+
+
+
+
+void printSendBuffer(uint8_t *buffer, uint16_t length) {
+    Serial.print("Send Buffer Contents: ");
+    for (uint16_t i = 0; i < length; i++) {
+        Serial.print(buffer[i], HEX); // Print each byte in hexadecimal format
+        Serial.print(" "); // Add a space for better readability
+    }
+    Serial.println(); // Add a new line after printing all bytes
+}
+
+
+//------------------------sendCommand8---------------------------------
+bool sendCommand8(uint8_t cmd, uint16_t rAddr, uint16_t val, bool check, uint16_t slave_addr){
     uint8_t sendBuffer[8]; // Send buffer
     uint8_t respBuffer[8]; // Response buffer (only used when check is true)
 
     if((slave_addr == 0xFFFF) ||
        (slave_addr < 0x01) ||
-       (slave_addr > 0xF7)){
+       (slave_addr > 0xF7)){  
         slave_addr = _addr;
     }
 
@@ -75,30 +239,34 @@ bool sendCmd8(uint8_t cmd, uint16_t rAddr, uint16_t val, bool check, uint16_t sl
     sendBuffer[4] = (val >> 8) & 0xFF;       // Set high byte of register value
     sendBuffer[5] = (val) & 0xFF;            // Set low byte =//=
 
-    setCRC(sendBuffer, 8);                   // Set CRC of frame
+    settheCRC(sendBuffer, 8);                   // Set CRC of frame
 
-    _serial->write(sendBuffer, 8); // send frame
-
+    printSendBuffer(sendBuffer, 8); // Print the contents of sendBuffer
+    delay(200);
+    if (!_serial->write(sendBuffer, 8)){ // send frame
+    Serial.println("Unsuccessfully wrote to the serial!(sendCommand8 Function)");
+    }else{
+      Serial.println("Successfully wrote to the serial!(sendCommand8 Function)");
+    }
+    delay(200);
     if(check) {
         if(!receive(respBuffer, 8)){ // if check enabled, read the response
             return false;
         }
-
-        // Check if response is same as send
-        for(uint8_t i = 0; i < 8; i++){
-            if(sendBuffer[i] != respBuffer[i])
-                return false;
-        }
+        
+         if (respBuffer[0] != RESPONSE_SUCCESS) { // Replace RESPONSE_SUCCESS with appropriate response code
+            return false;
+         }
     }
     return true;
 }
 
-//--------------------------------setCRC---------------------------
-void setCRC(uint8_t *buf, uint16_t len){
+//--------------------------------settheCRC---------------------------
+void settheCRC(uint8_t *buf, uint16_t len){
     if(len <= 2) // Sanity check
         return;
 
-    uint16_t crc = CRC16(buf, len - 2); // CRC of data
+    uint16_t crc = CRC_16(buf, len - 2); // CRC of data
 
     // Write high and low byte to last two positions
   buf[len - 2] = (crc >> 8) & 0xFF;  //high byte
@@ -143,7 +311,7 @@ static const uint16_t crcTable[] PROGMEM = {
 };
 
 
-uint16_t CRC16(const uint8_t *data, uint16_t len)
+uint16_t CRC_16(const uint8_t *data, uint16_t len)
 {
     uint8_t nTemp; // CRC table index
     uint16_t crc = 0xFFFF; // Default value
@@ -156,6 +324,14 @@ uint16_t CRC16(const uint8_t *data, uint16_t len)
     }
     return crc;
 }
+//--------------------------------------------------------------------------------------------------------
+void printReceivedBytes(uint8_t *data, uint16_t length) {
+    for (uint16_t i = 0; i < length; i++) {
+        Serial.print(data[i], HEX); // Print each byte as hexadecimal
+        Serial.print(" "); // Separate bytes with a space
+    }
+    Serial.println(); // Print a newline at the end
+}
 
 //-----------------------------------------receive---------------------------------------------------------------
 uint16_t receive(uint8_t *resp, uint16_t len)
@@ -163,68 +339,44 @@ uint16_t receive(uint8_t *resp, uint16_t len)
       //* This has to only be enabled for Software serial
     unsigned long startTime = millis(); // Start time for Timeout
     uint8_t index = 0; // Bytes we have read
+    uint16_t crc = 0; // Initialize CRC
     while((index < len) && (millis() - startTime < READ_TIMEOUT))
     {
-        if(_serial->available() > 0)
+        while(Serial.available() > 0 && index < len)
         {
+            Serial.print("there are available bytes to read (Receive Function)");
             uint8_t c = (uint8_t)_serial->read();
-
             resp[index++] = c;
-        }
+            crc=CRC_16(resp, index);
+        }      
+        Serial.println("No available bytes to read (Receive Function)");
         yield();  // do background netw tasks while blocked for IO (prevents ESP watchdog trigger)
-    }
+        }
+
+        if (index < len) {
+        // Handle the timeout condition appropriately
+          _isConnected = false; // We are no longer connected
+          return 0; // or return an appropriate error code
+        }
 
     // Check CRC with the number of bytes read
-    if(!checkCRC(resp, index)){
-        _isConnected = false; // We are no longer connected
-        return 0;
-    }
+        if(!checktheCRC(resp, len)){
+          _isConnected = false; // We are no longer connected
+          return 0;
+        }
 
-     _isConnected = true; // We received a reply 
-    return index;
+         _isConnected = true; // We received a reply 
+        return index;
+    
 }
-//------------------checkcrc---------------------------------------
-bool checkCRC(const uint8_t *buf, uint16_t len){
+//------------------checktheCRC---------------------------------------
+bool checktheCRC(const uint8_t *buf, uint16_t len)
+{
     if(len <= 2) // Sanity check
         return false;
 
-    uint16_t crc = CRC16(buf, len - 2); // Compute CRC of data
+    uint16_t crc = CRC_16(buf, len - 2); // Compute CRC of data
     return ((uint16_t)buf[len-2]  | (uint16_t)buf[len-1] << 8) == crc;
 }
 
  
-void setup() {
-  Serial.begin(9600);
-  Stream* _serial = &Serial;
-  Serial.print("Starting...");
-}
-
-
-
-void loop() {
-  static uint8_t addr = SET_ADDRESS;
-
-    // Print out current custom address
-    Serial.print("Previous address:   0x");
-    Serial.println(readtheAddress(true), HEX);
-
-    // Set the custom address
-    Serial.print("Setting address to: 0x");
-    Serial.println(addr, HEX);
-    if(!pzem1.setAddress(addr))
-    {
-      // Setting custom address failed. Probably no PZEM connected
-      Serial.println("Error setting address.");
-    } else {
-      // Print out the new custom address
-      Serial.print("Current address:    0x");
-      Serial.println(readtheAddress(false), HEX);
-      Serial.println();
-    }
-
-    // Increment the address every loop if desired
-    
-
-    delay(3000);
-  
-}
