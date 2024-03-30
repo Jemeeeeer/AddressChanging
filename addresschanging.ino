@@ -1,4 +1,5 @@
-#include <PZEM004Tv30.h>
+#include <HardwareSerial.h>
+
 #define REPORTING_PERIOD_MS 1000
 #define HardwareSerial
 #define ESP32
@@ -7,6 +8,7 @@
 #define READ_TIMEOUT 1000
 #define INCREMENT false
 #define NEW_ADDRESS 0xF7
+#define PZEM_BAUD_RATE  9600
 
 #define REG_VOLTAGE     0x0000
 #define REG_CURRENT_L   0x0001
@@ -30,16 +32,18 @@
 #define INVALID_ADDRESS 0x00
 #define RESPONSE_SUCCESS 0xF8 // Example constant for success response
 
-
-PZEM004Tv30 pzem1(Serial, 3,1,0xF8); // UART0 (Serial0) on pins 3 (RX) and 1 (TX)
+#define DEBUGLN(x) Serial.println(x)
 
 //byte customAddressCommand[] = {0xF8, 0x04, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00};
 Stream* _serial = &Serial;
+bool _isSoft;    // Is serial interface software
 bool _isConnected = false;  
 uint8_t _addr = PZEM_DEFAULT_ADDR;
 
 //function prototypes
 uint8_t readtheAddress(bool update);
+bool settheAddress(uint8_t addr);
+void printReceivedBytes(uint8_t *data, uint16_t length);
 bool sendCommand8(uint8_t cmd, uint16_t rAddr, uint16_t val, bool check, uint16_t slave_addr);
 void settheCRC(uint8_t *buf, uint16_t len);
 uint16_t CRC_16(const uint8_t *data, uint16_t len);
@@ -47,6 +51,8 @@ uint16_t receive(uint8_t *resp, uint16_t len);
 bool checktheCRC(const uint8_t *buf, uint16_t len);
 float getvoltage();
 bool updatetheValues();
+
+void initializePZEM004Tv30(uint8_t receivePin, uint8_t transmitPin, uint8_t addr);
 
 struct CurrentValues {
     float getvoltage;
@@ -59,31 +65,32 @@ void setup() {
   Serial.begin(9600);
   _serial = &Serial;
   Serial.print("Starting...");
+  initializePZEM004Tv30(16,17,0xF8); // UART0 (Serial0) on pins 3 (RX) and 1 (TX)
 }
 
 void loop() {
-  static uint8_t addr = SET_ADDRESS;
-    Serial.print("Previous address:   0x");
-    Serial.println(pzem1.getAddress(), HEX);
-    Serial.println(readtheAddress(true), HEX);
+    //static uint8_t addr = SET_ADDRESS;
+    //Serial.print("Previous address:   0x");
+    //Serial.println(pzem1.getAddress(), HEX);
+    //Serial.println(readtheAddress(true), HEX);
 
     // Set the custom address
-    Serial.print("Setting address to: 0x");
-    Serial.println(addr, HEX);
-    if(!settheAddress(0xF7))
-    {
+    //Serial.print("Setting address to: 0x");
+    //Serial.println(addr, HEX);
+    //if(!settheAddress(0xF7))
+    //{
       // Setting custom address failed. Probably no PZEM connected
-      Serial.println("Error setting address.");
-    } else {
+      //Serial.println("Error setting address.");
+    //} else {
       // Print out the new custom address
-      Serial.print("Current address:    0x");
-      Serial.println(readtheAddress(true), HEX);
-      Serial.println();
-    }
+      //Serial.print("Current address:    0x");
+      //Serial.println(readtheAddress(true), HEX);
+      //Serial.println();
+    //}
 
     // Update address based on specific conditions
-    addr = (addr == SET_ADDRESS) ? NEW_ADDRESS : SET_ADDRESS;  
-    delay(1000);
+    //addr = (addr == SET_ADDRESS) ? NEW_ADDRESS : SET_ADDRESS;  
+    //delay(1000);
     Serial.print("Voltage: "); 
     Serial.print(getvoltage());
     Serial.println("V");
@@ -92,6 +99,31 @@ void loop() {
   
 }
 
+//---------------------------------------init-------------------------
+void init(Stream* port, bool isSoft, uint8_t addr){
+    if(addr < 0x01 || addr > 0xF8) // Sanity check of address
+        addr = PZEM_DEFAULT_ADDR;
+    _addr = addr;
+
+    _serial = port;
+    _isSoft = isSoft;
+
+    // Set initial lastRed time so that we read right away
+    _lastRead = 0;
+    _lastRead -= UPDATE_TIME;
+
+    _isConnected = false; // We have not received anything yet...
+}
+
+//-------------------------------initializePZEM004Tv30-------------------------------
+void initializePZEM004Tv30(uint8_t receivePin, uint8_t transmitPin, uint8_t addr)
+{
+    Serial.begin(PZEM_BAUD_RATE, SERIAL_8N1, receivePin, transmitPin);
+    init((Stream *)&Serial, false, addr);
+}
+
+
+//--------------------------------getvoltage------------------------------------------
 float getvoltage()
 {
     if(!updatetheValues()) // Update vales if necessary
@@ -128,6 +160,8 @@ bool updatetheValues()
     // Update the current values
     _currentValues.getvoltage = ((uint32_t)response[3] << 8 | // Raw voltage in 0.1V
                               (uint32_t)response[4])/10.0;
+    Serial.println("currentvalues getvoltage is ");
+    Serial.print(_currentValues.getvoltage);
 
     //_currentValues.getcurrent = ((uint32_t)response[5] << 8 | // Raw current in 0.001A
                               //(uint32_t)response[6] |
@@ -342,14 +376,16 @@ uint16_t receive(uint8_t *resp, uint16_t len)
     uint16_t crc = 0; // Initialize CRC
     while((index < len) && (millis() - startTime < READ_TIMEOUT))
     {
-        while(Serial.available() > 0 && index < len)
+        if(Serial.available() > 0 && index < len)
         {
             Serial.print("there are available bytes to read (Receive Function)");
             uint8_t c = (uint8_t)_serial->read();
             resp[index++] = c;
             crc=CRC_16(resp, index);
         }      
-        Serial.println("No available bytes to read (Receive Function)");
+        else{
+          Serial.println("No available bytes to read (Receive Function)");
+        }
         yield();  // do background netw tasks while blocked for IO (prevents ESP watchdog trigger)
         }
 
